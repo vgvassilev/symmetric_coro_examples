@@ -600,6 +600,77 @@ void test_print_counter()
     assert(!pc.done());
 }
 
+
+/*
+print_range(int start, int end) : coroutine<void()>
+{
+  int i = start;
+  for (; i < end - 1; ++i) {
+    printf("%d\n", i);
+    yield();
+  }
+  if (i < end) {
+    printf("%d\n", i);
+  }
+}
+*/
+
+// Translates to:
+class print_range : public coroutine<void(void)>
+{
+public:
+    print_range(int start, int end)
+        : start(start)
+        , end(end)
+    {}
+
+private:
+    struct coroutine_state {
+        union { int i; };
+    } __state;
+
+    inline __attribute__((always_inline)) cps_call_data __body(cps_call_data call_data) override
+    {
+        switch (get_suspend_point())
+        {
+        case 0: // initial suspend point
+            process_resume(get_caller(), call_data);
+            new (&__state.i) int(start);
+            for (; __state.i < end - 1; ++__state.i) {
+                printf("%d\n", __state.i);
+                return prepare_to_suspend(1, get_caller());
+        case 1: // suspend point 1
+                process_resume(get_caller(), call_data);
+            }
+
+            if (__state.i < end) {
+                printf("%d\n", __state.i);
+            }
+
+            return prepare_to_suspend(_sp_done, get_caller());
+
+        default:
+            assert(false && "Called a completed coroutine");
+            return {};
+        };
+    }
+
+    int start;
+    int end;
+};
+
+void test_print_range()
+{
+    printf("*** Test print range ***\n");
+    const int start = 10;
+    const int end = 14;
+    print_range r(start, end);
+
+    while (!r.done())
+      r();
+}
+
+
 /// Example three: a coroutine which returns a range of numbers. The start
 /// and end value are passed to the coroutine constructor. Demonstrates how
 /// the coroutine produces values.
@@ -846,6 +917,7 @@ int main()
 {
     test_yield_once();
     test_print_counter();
+    test_print_range();
     test_range();
     test_echo();
     test_multiply();
