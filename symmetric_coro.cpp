@@ -559,7 +559,7 @@ private:
         union { int i; };
     } __state;
 
-    cps_call_data __body(cps_call_data call_data) override
+    inline __attribute__((always_inline)) cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
@@ -632,7 +632,7 @@ private:
         union { int i; };
     } __state;
 
-    cps_call_data __body(cps_call_data call_data) override
+    inline __attribute__((always_inline)) cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
@@ -704,7 +704,7 @@ private:
         union { int val; };
     } __state;
 
-    cps_call_data __body(cps_call_data call_data) override
+    inline __attribute__((always_inline)) cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
@@ -779,7 +779,7 @@ private:
         union { int result; };
     } __state;
 
-    cps_call_data __body(cps_call_data call_data) override
+    inline __attribute__((always_inline)) cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
