@@ -1,7 +1,8 @@
+#include <assert.h>
+#include <memory>
 #include <utility>
 
-#include <iostream>
-#include <assert.h>
+extern "C" int printf(const char*, ...);
 
 using namespace std;
 
@@ -509,7 +510,7 @@ private:
 
 void test_yield_once()
 {
-    cout << "*** Test yield_once ***" << endl;
+    printf("*** Test yield_once ***\n");
     yield_once yo;
 
     assert(!yo.done());
@@ -530,7 +531,7 @@ void test_yield_once()
 /*
 print_counter(int start, int step) : coroutine<void(void)> {
   for (int i = start; ; i += step) {
-    cout << i << endl;
+    printf("%d\n, i);
     yield();
   }
 }
@@ -560,7 +561,7 @@ private:
 
             new (&__state.i) int(start);
             for (;; __state.i += step) {
-                cout << __state.i << endl;
+                printf("%d\n", __state.i);
 
                 return prepare_to_suspend(1, get_caller());
         case 1: // suspend point
@@ -579,7 +580,7 @@ private:
 
 void test_print_counter()
 {
-    cout << "*** Test print_counter ***" << endl;
+    printf("*** Test print_counter ***\n");
     print_counter pc(1, 3);
 
     assert(!pc.done());
@@ -652,7 +653,7 @@ private:
 
 void test_range()
 {
-    cout << "*** Test range ***" << endl;
+    printf("*** Test range ***\n");
     const int start = 10;
     const int end = 14;
     range r(start, end);
@@ -660,7 +661,7 @@ void test_range()
     for (int i = start; i < end; ++i) {
         assert(!r.done());
         int val = r();
-        cout << val << endl;
+        printf("%d\n", val);
         assert(val == i);
     }
 
@@ -720,14 +721,14 @@ private:
 
 void test_echo()
 {
-    cout << "*** Test echo ***" << endl;
+    printf("*** Test echo ***\n");
     echo e;
 
     assert(!e.done());
 
     for (int i = 0; i < 4; ++i) {
         int response = e(i);
-        cout << i << " -> " << response << endl;
+        printf("%d -> %d\n", i, response);
         assert(response == i);
         assert(!e.done());
     }
@@ -816,7 +817,7 @@ private:
 
 void test_multiply()
 {
-    cout << "*** Test mutiply ***" << endl;
+    printf("*** Test mutiply ***\n");
     range r1(0, 4);
     range r2(2, 10);
 
@@ -829,7 +830,7 @@ void test_multiply()
         assert(!r2.done());
 
         int product = m();
-        cout << product << endl;
+        printf("%d\n", product);
     }
 
     assert(r1.done());
