@@ -131,15 +131,14 @@ protected:
 
 private:
   class invalid_cps_target : public cps_target {
-    cps_call_data __body(cps_call_data call_data) override {
+    inline __attribute__((always_inline)) cps_call_data __body(cps_call_data call_data) override {
       assert(false && "Invoked invalid continuation");
       return {{}, nullptr};
     }
   };
 
   static cps_target* get_invalid_continuation() {
-    static invalid_cps_target invalid_continuation;
-    return &invalid_continuation;
+    return reinterpret_cast<invalid_cps_target*>(~0);
   }
 
   void invalidate() {
