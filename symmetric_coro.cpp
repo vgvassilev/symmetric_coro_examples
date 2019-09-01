@@ -46,6 +46,14 @@ public:
     cps_arg data = arg;
     cps_target* cont = nullptr;
 
+    {
+      cps_call_data call_data = callee->__body({data, cont});
+
+      cont = callee;
+      callee = call_data.cont;
+      data = call_data.data;
+    }
+
     while (callee != nullptr) {
       cps_call_data call_data = callee->__body({data, cont});
 
