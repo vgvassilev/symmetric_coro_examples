@@ -666,11 +666,9 @@ void test_range()
     const int end = 14;
     range r(start, end);
 
-    for (int i = start; i < end; ++i) {
-        assert(!r.done());
+    while( !r.done() ) {
         int val = r();
         printf("%d\n", val);
-        assert(val == i);
     }
 
     assert(r.done());
