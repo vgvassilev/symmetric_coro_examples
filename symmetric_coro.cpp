@@ -3,8 +3,6 @@
 #include <iostream>
 #include <assert.h>
 
-#define __CPS  __attribute__((annotate("CPS_function")))
-
 using namespace std;
 
 namespace std {
@@ -12,7 +10,7 @@ namespace std {
 // Low level CPS support
 
 class cps_target {
-protected:
+public:
   struct cps_arg {
     cps_arg() : data(nullptr) {}
     cps_arg(int i) : i(i) {}
@@ -40,7 +38,7 @@ protected:
   };
 
   // This trampoline simulates tail calls
-  static cps_arg trampoline(cps_target* target, cps_arg arg) {
+  static cps_call_data trampoline(cps_target* target, cps_arg arg) {
     assert(target != nullptr);
 
     cps_target* callee = target;
@@ -55,107 +53,96 @@ protected:
       data = call_data.data;
     }
 
-    return data;
+    return {data, cont};
   }
 
   // The coroutine body and current suspend point
-  virtual __CPS cps_call_data __body(cps_call_data call_data) = 0;
+  virtual cps_call_data __body(cps_call_data call_data) = 0;
 };
 
-template<class...> class coroutine;
-template<class...> class resume_continuation;
+template<class... Ts> class coroutine;
+template<class... Ts> class resume_continuation;
+
 
 ///////////////////////////////////////////////////////////
 // Resume continuation implementation
 
-template<> class resume_continuation<> : public cps_target {
+template<> class coroutine<>;
+
+template<> class resume_continuation<> {
+  friend class coroutine<>;
+
 public:
   bool is_valid() const {
-    return _target != this;
+    return _target != get_invalid_continuation();
   }
 
 protected:
   resume_continuation()
-    : _helper(*this)
-    , _target(this) // An invalidated continuation points to itself
+    : _target(get_invalid_continuation()) // An invalidated continuation points to itself
   {}                // because nullptr is a valid target.
 
   resume_continuation(cps_target *target)
-    : _helper(*this)
-    , _target(target)
+    : _target(target)
   {}
 
   resume_continuation& operator=(resume_continuation&& other) {
     if (other.is_valid()) {
       _target = other._target;
+      other.invalidate();
     } else {
-        _target = this;
+      invalidate();
     }
+
     return *this;
   }
 
-  cps_arg call_with_trampoline() {
-    return trampoline(this, {});
+  cps_target* release() {
+    cps_target* target = _target;
+    invalidate();
+    return target;
+  }
+
+  void reset(cps_target* new_target) {
+    _target = new_target;
+  }
+
+  cps_target::cps_arg call_with_trampoline() {
+    cps_target::cps_call_data call_data = cps_target::trampoline(release(), {});
+    reset(call_data.cont);
+    return call_data.data;
   }
 
   template<typename A>
-  cps_arg call_with_trampoline(A arg) {
-    return trampoline(this, {arg});
-  }
-
-  cps_call_data get_call_data() {
-    return {{}, this};
-  }
-
-  template<typename A>
-  cps_call_data get_call_data(A arg) {
-    return {{arg}, this};
+  cps_target::cps_arg call_with_trampoline(A arg) {
+    cps_target::cps_call_data call_data = cps_target::trampoline(release(), {arg});
+    reset(call_data.cont);
+    return call_data.data;
   }
 
 private:
-  // A helper class
-  class internal : public cps_target {
-  public:
-    internal(resume_continuation<>& owner)
-      : _owner(owner)
-    {}
-
-    __CPS cps_call_data __body(cps_call_data call_data) override {
-      // If the owner is valid, the internal continuation was called
-      // by the owner to transfer control to its target. Otherwise,
-      // someone is trying to give control back to the owner.
-      if (_owner.is_valid()) {
-        cps_target *target = _owner._target;
-        _owner._target = &_owner;
-        return {call_data.data, target};
-      } else {
-        _owner._target = call_data.cont;
-        return {call_data.data, &_owner};
-      }
-  };
-  private:
-    resume_continuation<>& _owner;
-  };
-
-  __CPS cps_call_data __body(cps_call_data call_data) override {
-    if (call_data.cont != &_helper) {
-      // If transfer doesn't come from the helper, remember the caller and
-      // use the helper to transfer control to the target. The helper will
-      // invalidate this continuation.
-      assert(_target != this && "Invoking an invalidated resume continuation");
-      _caller = call_data.cont;
-      return {call_data.data, &_helper};
-    } else {
-      // If transfer comes from the helper, just pass control on to
-      // the saved caller. The helper has updated the target.
-      return {call_data.data, _caller};
+  class invalid_cps_target : public cps_target {
+    cps_call_data __body(cps_call_data call_data) override {
+      assert(false && "Invoked invalid continuation");
+      return {{}, nullptr};
     }
+  };
+
+  static cps_target* get_invalid_continuation() {
+    static invalid_cps_target invalid_continuation;
+    return &invalid_continuation;
   }
 
-  internal _helper;
+  void invalidate() {
+    _target = get_invalid_continuation();
+  }
+
+  // Should we have this at all??? Should the continuation be a cps_target? I think not...
+  // Maybe instead we should have a helper cps_target for the call with a trampoline.
   cps_target* _target;
-  cps_target* _caller;
 };
+
+
 
 ///////////////////////////////////////////////////////////
 // End-user resume continuation - type-safe wrappers on top
@@ -178,13 +165,8 @@ public:
     return *this;
   }
 
-
-  void call_with_trampoline() {
-    resume_continuation<>::call_with_trampoline();
-  }
-
-  cps_call_data get_call_data() {
-    return resume_continuation<>::get_call_data();
+  void operator()() {
+    call_with_trampoline();
   }
 };
 
@@ -200,12 +182,8 @@ public:
 
   resume_continuation(coroutine<R()> *c);
 
-  R call_with_trampoline() {
-    return resume_continuation<>::call_with_trampoline();
-  }
-
-  cps_call_data get_call_data() {
-    return resume_continuation<>::get_call_data();
+  R operator()() {
+    return call_with_trampoline();
   }
 };
 
@@ -221,12 +199,8 @@ public:
 
   resume_continuation(coroutine<void(A)> *c);
 
-  void call_with_trampoline(A arg) {
-    return resume_continuation<>::call_with_trampoline(arg);
-  }
-
-  cps_call_data get_call_data(A arg) {
-    return resume_continuation<>::get_call_data(arg);
+  void operator()(A arg) {
+    call_with_trampoline(arg);
   }
 };
 
@@ -242,12 +216,8 @@ public:
 
   resume_continuation(coroutine<R(A)> *c);
 
-  R call_with_trampoline(A arg) {
-    return resume_continuation<>::call_with_trampoline(arg);
-  }
-
-  cps_call_data get_call_data(A arg) {
-    return resume_continuation<>::get_call_data(arg);
+  R operator()(A arg) {
+    return call_with_trampoline(arg);
   }
 };
 
@@ -257,10 +227,25 @@ public:
 template<> class coroutine<> : public cps_target {
 public:
   bool done() const {
-      return _sp == -1;
+    return _sp == -1;
   }
 
 protected:
+  // Inside a coroutine body, some invocations get rewritten as follows:
+  //
+  //   1) `coroutine::yield()`   >>>    `get_caller()()`
+  //
+  //   2) `coro()` >>> `coro._cont()`
+  //
+  //   3) `rc()`, where `rc` is a `resume_continuation`   >>>
+  //      ```
+  //        prepare_to_suspend(N, rc);
+  //      case N:
+  //        process_resume(rc, call_data)
+  //      ```
+  //      where `N` is a generated id for the suspend point, unique within this
+  //      coroutine body.
+
   using suspend_point = int;
 
   coroutine()
@@ -271,14 +256,28 @@ protected:
     return _sp;
   }
 
-  void set_suspend_point(suspend_point sp) {
-    assert(!done());
+  cps_call_data prepare_to_suspend(suspend_point sp, resume_continuation<>& cont) {
     _sp = sp;
+    return {{}, cont.release()};
   }
 
-  void set_done() {
-    _sp = -1;
+  template<typename ValType>
+  cps_call_data prepare_to_suspend(suspend_point sp, resume_continuation<>& cont, ValType val) {
+    _sp = sp;
+    return {{val}, cont.release()};
   }
+
+  void process_resume(resume_continuation<>& cont, cps_call_data& call_data) {
+    cont.reset(call_data.cont);
+  }
+
+  template<typename ValType>
+  ValType process_resume(resume_continuation<>& cont, cps_call_data& call_data) {
+    cont.reset(call_data.cont);
+    return call_data.data;
+  }
+
+  constexpr static suspend_point _sp_done = -1;
 
 private:
   suspend_point _sp;
@@ -290,20 +289,12 @@ private:
 
 template<> class coroutine<void(void)> : public coroutine<> {
 public:
-  // Not implemented on purpose
-  void __CPS operator()();
-
-  // Calling `coroutine<void(void)>::operator()` from a non-cps
-  // function translates to `call_with_trampoline()`.
-  void call_with_trampoline() {
-    return _cont.call_with_trampoline();
+ // Always inlined in non-coroutines, injected in coroutine bodies
+  void operator()() {
+    _cont();
   }
 
-  // Calling `coroutine<void(void)>::operator()` from a cps function
-  // translates to `return get_call_data();`.
-  cps_call_data get_call_data() {
-    return _cont.get_call_data();
-  }
+  auto& get_cont() { return _cont; }
 
 protected:
   coroutine()
@@ -311,11 +302,9 @@ protected:
     , _caller()
   {}
 
-  // Translates to `get_caller()()`
-  void __CPS yield();
-
-  void set_caller(resume_continuation<void(void)>&& caller) {
-    _caller = std::move(caller);
+  // Always inlined
+  void yield() {
+    get_caller()();
   }
 
   resume_continuation<void(void)>& get_caller() {
@@ -331,23 +320,15 @@ resume_continuation<void()>::resume_continuation(coroutine<void()> *c)
   : resume_continuation<>(static_cast<coroutine<>*>(c))
 {}
 
-
 template<class R> class coroutine<R(void)> : public coroutine<> {
+
 public:
-  // Not implemented on purpose
-  void __CPS operator()();
-
-  // Calling `coroutine<R(void)>::operator()` from a non-cps
-  // function translates to `_cont.call_with_trampoline()`.
-  R call_with_trampoline() {
-    return _cont.call_with_trampoline();
+ // Always inlined in non-coroutines, injected in coroutine bodies
+  R operator()() {
+    return _cont();
   }
 
-  // Calling `coroutine<R(void)>::operator()` from a cps function
-  // translates to `return get_call_data();`.
-  cps_call_data get_call_data() {
-    return _cont.get_call_data();
-  }
+  auto& get_cont() { return _cont; }
 
 protected:
   coroutine()
@@ -355,11 +336,9 @@ protected:
     , _caller()
   {}
 
-  // Translates to `get_caller()(result)`
-  void __CPS yield(R result);
-
-  void set_caller(resume_continuation<void(R)>&& caller) {
-    _caller = std::move(caller);
+  // Always inlined
+  void yield(R result) {
+    get_caller()(result);
   }
 
   resume_continuation<void(R)>& get_caller() {
@@ -378,20 +357,12 @@ resume_continuation<R()>::resume_continuation(coroutine<R()> *c)
 
 template<class A> class coroutine<void(A)> : public coroutine<> {
 public:
-  // Not implemented on purpose
-  void __CPS operator()();
-
-  // Calling `coroutine<void(A)>::operator(arg)` from a non-cps
-  // function translates to `call_with_trampoline(arg)`.
-  void call_with_trampoline(A arg) {
-    return _cont.call_with_trampoline(arg);
+ // Always inlined in non-coroutines, injected in coroutine bodies
+  void operator()(A arg) {
+    _cont(arg);
   }
 
-  // Calling `coroutine<void(A)>::operator(A)` from a cps function
-  // translates to `return get_call_data();`.
-  cps_call_data get_call_data(A arg) {
-    return _cont.get_call_data(arg);
-  }
+  auto& get_cont() { return _cont; }
 
 protected:
   coroutine()
@@ -399,8 +370,10 @@ protected:
     , _caller()
   {}
 
-  // Translates to `A arg = get_caller()()`
-  void __CPS yield();
+  // Always inlined
+  A yield() {
+    return get_caller()();
+  }
 
   void set_caller(resume_continuation<A(void)>&& caller) {
     _caller = std::move(caller);
@@ -434,20 +407,12 @@ resume_continuation<void(A)>::resume_continuation(coroutine<void(A)> *c)
 
 template<class R, class A> class coroutine<R(A)> : public coroutine<> {
 public:
-  // Not implemented on purpose
-  R __CPS operator()(A);
-
-  // Calling `coroutine<R(A)>::operator()` from a non-cps
-  // function translates to `call_with_trampoline(arg)`.
-  R call_with_trampoline(A arg) {
-    return _cont.call_with_trampoline(arg);
+  // Always inlined in non-coroutines, injected in coroutine bodies
+  R operator()(A arg) {
+    return _cont(arg);
   }
 
-  // Calling `coroutine<R(A)>::operator()` from a cps function
-  // translates to `return get_call_data(A);`.
-  cps_call_data get_call_data(A arg) {
-    return _cont.get_call_data(arg);
-  }
+  auto& get_cont() { return _cont; }
 
 protected:
   coroutine()
@@ -455,8 +420,10 @@ protected:
     , _caller()
   {}
 
-  // Translates to `A arg = get_caller()(result)`
-  A __CPS yield(R result);
+  // Always inlined
+  A yield(R result) {
+    return get_caller()(result);
+  }
 
   void set_caller(resume_continuation<A(R)>&& caller) {
     _caller = std::move(caller);
@@ -516,22 +483,22 @@ private:
     struct corotine_state {
     };
 
-    __CPS cps_call_data __body(cps_call_data call_data) override
+    cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
-        case 0: // initial suspend point
-            // Save caller
-            set_caller(resume_continuation<void(void)>(call_data.cont));
+        case 0:
+            // Initial suspend point - save caller
+            process_resume(get_caller(), call_data);
 
-            // yield()
-            set_suspend_point(1);
-            return get_caller().get_call_data();
+            // yield() == get_caller()() == expansion of suspend_to(get_caller()())
+            return prepare_to_suspend(1, get_caller());
 
         case 1: // suspend point 1
+            process_resume(get_caller(), call_data);
+
             // return
-            set_done();
-            return get_caller().get_call_data();;
+            return prepare_to_suspend(_sp_done, get_caller());
 
         default:
             assert(false && "Called a completed coroutine");
@@ -547,10 +514,10 @@ void test_yield_once()
 
     assert(!yo.done());
 
-    yo.call_with_trampoline(); // yo();
+    yo();
     assert(!yo.done());
 
-    yo.call_with_trampoline(); // yo();
+    yo(); // yo();
     assert(yo.done());
 }
 
@@ -583,22 +550,21 @@ private:
         union { int i; };
     } __state;
 
-    __CPS cps_call_data __body(cps_call_data call_data) override
+    cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
-        case 0: // initial suspend point
-            // Save caller
-            set_caller(resume_continuation<void(void)>(call_data.cont));
+        case 0:
+            // Initial suspend point - Save caller
+            process_resume(get_caller(), call_data);
 
-            new (&__state.i) int(0);
+            new (&__state.i) int(start);
             for (;; __state.i += step) {
                 cout << __state.i << endl;
 
-                set_suspend_point(1);
-                return get_caller().get_call_data();
+                return prepare_to_suspend(1, get_caller());
         case 1: // suspend point
-                continue;
+                process_resume(get_caller(), call_data);
             }
 
         default:
@@ -619,7 +585,7 @@ void test_print_counter()
     assert(!pc.done());
 
     for (int i = 0; i < 4; ++i) {
-        pc.call_with_trampoline();
+        pc();
         assert(!pc.done());
     }
 
@@ -657,24 +623,22 @@ private:
         union { int i; };
     } __state;
 
-    __CPS cps_call_data __body(cps_call_data call_data) override
+    cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
         case 0: // initial suspend point
-            set_caller(resume_continuation<void(int)>(call_data.cont));
+            process_resume(get_caller(), call_data);
 
             for (new (&__state.i) int(start);
                  __state.i < end - 1;
                  ++__state.i) {
-                set_suspend_point(1);
-                return get_caller().get_call_data(__state.i);
+                return prepare_to_suspend(1, get_caller(), __state.i);
         case 1: // suspend point 1
-                continue;
+                process_resume(get_caller(), call_data);
             }
 
-            set_done();
-            return get_caller().get_call_data(end - 1);
+            return prepare_to_suspend(_sp_done, get_caller(), end - 1);
 
         default:
             assert(false && "Called a completed coroutine");
@@ -695,7 +659,7 @@ void test_range()
 
     for (int i = start; i < end; ++i) {
         assert(!r.done());
-        int val = r.call_with_trampoline();
+        int val = r();
         cout << val << endl;
         assert(val == i);
     }
@@ -731,21 +695,20 @@ private:
         union { int val; };
     } __state;
 
-    __CPS cps_call_data __body(cps_call_data call_data) override
+    cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
-        case 0: // initial suspend point
-            set_caller(resume_continuation<int(int)>(call_data.cont));
-            set_initial_value(static_cast<int>(call_data.data));
+        case 0: // initial suspend point - saves the caller and the initial value
+            set_initial_value(process_resume<int>(get_caller(), call_data));
 
             new (&__state.val) int(get_initial_value());
 
             for (;;) {
-                set_suspend_point(1);
-                return get_caller().get_call_data(__state.val);
+                return prepare_to_suspend(1, get_caller(), __state.val);
+
         case 1:
-                __state.val = static_cast<int>(call_data.data);
+                __state.val = process_resume<int>(get_caller(), call_data);
             }
 
         default:
@@ -763,7 +726,7 @@ void test_echo()
     assert(!e.done());
 
     for (int i = 0; i < 4; ++i) {
-        int response = e.call_with_trampoline(i);
+        int response = e(i);
         cout << i << " -> " << response << endl;
         assert(response == i);
         assert(!e.done());
@@ -807,41 +770,37 @@ private:
         union { int result; };
     } __state;
 
-    __CPS cps_call_data __body(cps_call_data call_data) override
+    cps_call_data __body(cps_call_data call_data) override
     {
         switch (get_suspend_point())
         {
         case 0:
-            set_caller(resume_continuation<void(int)>(call_data.cont));
+            process_resume(get_caller(), call_data);
 
             assert(!r1.done() && !r2.done());
 
             for (;;) {
                 // _temp1 = r1();
-                set_suspend_point(1);
-                return r1.get_call_data();
+                return prepare_to_suspend(1, r1.get_cont());
         case 1:
-                new (&__state._temp1) int(call_data.data);
+                new (&__state._temp1) int(process_resume<int>(r1.get_cont(), call_data));
 
                 // _temp2 = r2();
-                set_suspend_point(2);
-                return r2.get_call_data();
+                return prepare_to_suspend(2, r2.get_cont());
         case 2:
-                new (&__state._temp2) int(call_data.data);
+                new (&__state._temp2) int(process_resume<int>(r2.get_cont(), call_data));
 
                 // result = temp1 * temp2;
                 new (&__state.result) int(__state._temp1 * __state._temp2);
 
                 if (!r1.done() && !r2.done()) {
                     // yield(result);
-                    set_suspend_point(3);
-                    return get_caller().get_call_data(__state.result);
+                    return prepare_to_suspend(3, get_caller(), __state.result);
         case 3:
-                    continue;
+                    process_resume(get_caller(), call_data);
                 } else {
                     // yield(result);
-                    set_done();
-                    return get_caller().get_call_data(__state.result);
+                    return prepare_to_suspend(_sp_done, get_caller(), __state.result);
                 }
             }
 
@@ -859,7 +818,7 @@ void test_multiply()
 {
     cout << "*** Test mutiply ***" << endl;
     range r1(0, 4);
-    range r2(0, 10);
+    range r2(2, 10);
 
     multiply m(r1, r2);
 
@@ -869,7 +828,7 @@ void test_multiply()
         assert(!r1.done());
         assert(!r2.done());
 
-        int product = m.call_with_trampoline();
+        int product = m();
         cout << product << endl;
     }
 
